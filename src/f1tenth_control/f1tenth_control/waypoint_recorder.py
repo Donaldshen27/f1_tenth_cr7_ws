@@ -41,7 +41,7 @@ class WaypointRecorder(Node):
         # Subscriber to odometry
         self.odom_sub = self.create_subscription(
             Odometry,
-            '/car3/odom',
+            '/car1/odom',
             self.odom_callback,
             10
         )
@@ -66,7 +66,7 @@ class WaypointRecorder(Node):
         self.status_timer = self.create_timer(5.0, self.status_update)
 
         self.get_logger().info('Waypoint Recorder Node Started')
-        self.get_logger().info('Subscribed to: /car3/odom')
+        self.get_logger().info('Subscribed to: /car1/odom')
         self.get_logger().info(f'Recording frequency: {self.recording_freq} Hz')
         self.get_logger().info(f'Distance threshold: {self.dist_threshold} m')
         self.get_logger().info(f'Output file: {self.output_filename}')

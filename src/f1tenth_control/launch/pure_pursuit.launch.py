@@ -11,7 +11,7 @@ from launch_ros.actions import PushRosNamespace
 
 def generate_launch_description():
   launch_args = [
-        DeclareLaunchArgument(name="car_name", default_value="car3", description="car name"),
+        DeclareLaunchArgument(name="car_name", default_value="car1", description="car name"),
         DeclareLaunchArgument(name="start_cam", default_value="false", description="Start realsense camera"),
         DeclareLaunchArgument(name="start_lidar", default_value="false", description="Start Hokuyo lidar"),
         DeclareLaunchArgument(name="start_visualization", default_value="false", description="Start rviz visualization"),
