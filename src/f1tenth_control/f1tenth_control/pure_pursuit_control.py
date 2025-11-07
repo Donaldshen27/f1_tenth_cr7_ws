@@ -16,6 +16,7 @@ from nav_msgs.msg import Odometry, Path
 from geometry_msgs.msg import PoseStamped
 from std_msgs.msg import Bool
 from math import cos, sin
+from ament_index_python.packages import get_package_share_directory
 
 class PurePursuit(Node):
     def __init__(self):
@@ -109,8 +110,8 @@ class PurePursuit(Node):
         self.get_logger().warn(f"Received state: x={self.x}, y={self.y}, yaw={self.yaw}")
 
     def load_waypoints_from_file(self, filename: str) -> Optional[Dict[str, np.ndarray]]:
-        dirname = os.path.dirname(__file__)
-        filepath = os.path.join(dirname, '../waypoints', filename)
+        package_share_directory = get_package_share_directory('f1tenth_control')
+        filepath = os.path.join(package_share_directory, 'waypoints', filename)
 
         try:
             with open(filepath, encoding='utf-8') as f:

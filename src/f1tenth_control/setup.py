@@ -16,7 +16,7 @@ setup(
         ('share/' + package_name + '/rviz', glob('rviz/*.rviz')),
         ('share/' + package_name + '/waypoints', glob('waypoints/*.csv')),
     ],
-    install_requires=['setuptools'],
+    install_requires=['setuptools', 'ament_index_python'],
     zip_safe=True,
     maintainer='skn',
     maintainer_email='skn@todo.todo',
