@@ -26,6 +26,8 @@ setup(
         'console_scripts': [
             'pure_pursuit_control = f1tenth_control.pure_pursuit_control:main',
             'waypoint_recorder = f1tenth_control.waypoint_recorder:main',
+            'lane_detector_node = f1tenth_control.lane_detector_node:main',
+            'lane_path_mux = f1tenth_control.lane_path_mux:main',
         ],
     },
 )

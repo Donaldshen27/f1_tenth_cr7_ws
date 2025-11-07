@@ -3,17 +3,18 @@
 import os
 import csv
 import math
+from typing import Dict, List, Optional
+
 import numpy as np
-from numpy import linalg as la
 
 import rclpy
 from rclpy.node import Node
-import tf_transformations as tf
+from rclpy.time import Time
 from tf_transformations import euler_from_quaternion
 from ackermann_msgs.msg import AckermannDriveStamped
 from nav_msgs.msg import Odometry, Path
 from geometry_msgs.msg import PoseStamped
-from std_msgs.msg import Header
+from std_msgs.msg import Bool
 from math import cos, sin
 
 class PurePursuit(Node):
@@ -23,17 +24,40 @@ class PurePursuit(Node):
         self.rate_hz = 50
         self.timer_period = 1.0 / self.rate_hz
 
-        self.look_ahead = 0.3  # meters
-        self.wheelbase = 0.325  # meters
-        # self.offset = 0.15  # meters
+        self.declare_parameter('look_ahead', 0.3)
+        self.declare_parameter('wheelbase', 0.325)
+        self.declare_parameter('curvature_gain', 0.5)
+        self.declare_parameter('steering_limit', 0.3)
+        self.declare_parameter('fast_speed', 1.0)
+        self.declare_parameter('slow_speed', 0.4)
+        self.declare_parameter('dynamic_path_timeout', 0.25)
+        self.declare_parameter('use_path_topic', True)
+        self.declare_parameter('selected_path_topic', 'selected_path')
+        self.declare_parameter('static_waypoints_file', 'xyhead_demo_pp.csv')
+        self.declare_parameter('log_debug', False)
+
+        self.look_ahead = float(self.get_parameter('look_ahead').value)
+        self.wheelbase = float(self.get_parameter('wheelbase').value)
+        self.curvature_gain = float(self.get_parameter('curvature_gain').value)
+        self.steering_limit = float(self.get_parameter('steering_limit').value)
+        self.fast_speed = float(self.get_parameter('fast_speed').value)
+        self.slow_speed = float(self.get_parameter('slow_speed').value)
+        self.dynamic_path_timeout = float(self.get_parameter('dynamic_path_timeout').value)
+        self.use_path_topic = bool(self.get_parameter('use_path_topic').value)
+        self.selected_path_topic = self.get_parameter('selected_path_topic').value
+        self.static_waypoints_file = self.get_parameter('static_waypoints_file').value
+        self.log_debug_enabled = bool(self.get_parameter('log_debug').value)
 
         self.x = 0.0
         self.y = 0.0
         self.yaw = 0.0  # degrees
 
-        # Read waypoints
+        # Read static waypoints for fallback
         self.goal = 0
-        self.read_waypoints()
+        self.static_path = self.load_waypoints_from_file(self.static_waypoints_file)
+        self.dynamic_path: Optional[Dict[str, np.ndarray]] = None
+        self.dynamic_path_stamp: Optional[Time] = None
+        self.vision_path_active = False
         # Publisher
         self.ctrl_pub = self.create_publisher(
             AckermannDriveStamped,
@@ -45,9 +69,9 @@ class PurePursuit(Node):
             10
             )
 
-        self.drive_msg = AckermannDriveStamped() # WHY CLASS??
+        self.drive_msg = AckermannDriveStamped()
         self.drive_msg.header.frame_id = "base_link"
-        self.drive_msg.drive.speed = 0.0  # m/s
+        self.drive_msg.drive.speed = self.fast_speed
 
         # Subscriber
         self.vicon_sub = self.create_subscription(
@@ -56,6 +80,20 @@ class PurePursuit(Node):
             self.odom_callback,
             10
         )
+
+        if self.use_path_topic:
+            self.path_sub = self.create_subscription(
+                Path,
+                self.selected_path_topic,
+                self.selected_path_callback,
+                10
+            )
+            self.vision_flag_sub = self.create_subscription(
+                Bool,
+                'vision_path_active',
+                self.vision_flag_callback,
+                10
+            )
 
 
         # Timer for control loop
@@ -70,93 +108,151 @@ class PurePursuit(Node):
         self.drive_msg.drive.speed = 1.0  # set constant speed only if you have odometry
         self.get_logger().warn(f"Received state: x={self.x}, y={self.y}, yaw={self.yaw}")
 
-    def read_waypoints(self):
+    def load_waypoints_from_file(self, filename: str) -> Optional[Dict[str, np.ndarray]]:
         dirname = os.path.dirname(__file__)
-        filename = os.path.join(dirname, '../waypoints/xyhead_demo_pp.csv')
+        filepath = os.path.join(dirname, '../waypoints', filename)
 
-        with open(filename) as f:
-            path_points = [tuple(line) for line in csv.reader(f)]
+        try:
+            with open(filepath, encoding='utf-8') as f:
+                path_points = [tuple(line) for line in csv.reader(f) if len(line) >= 3]
+        except FileNotFoundError:
+            self.get_logger().error(f'Waypoint file not found: {filepath}')
+            return None
 
-        self.path_points_x_record = [float(point[0]) for point in path_points]
-        self.path_points_y_record = [float(point[1]) for point in path_points]
-        self.path_points_yaw_record = [float(point[2]) for point in path_points]
-        self.wp_size = len(self.path_points_x_record)
-        self.dist_arr = np.zeros(self.wp_size)
+        if not path_points:
+            self.get_logger().error(f'Waypoint file {filepath} is empty')
+            return None
+
+        xs = np.array([float(point[0]) for point in path_points], dtype=np.float32)
+        ys = np.array([float(point[1]) for point in path_points], dtype=np.float32)
+        yaw_deg = np.array([float(point[2]) for point in path_points], dtype=np.float32)
+
+        self.get_logger().info(f'Loaded {len(xs)} static waypoints from {filepath}')
+        return {'x': xs, 'y': ys, 'yaw_deg': yaw_deg}
 
     def publish_waypoints(self):
+        if self.static_path is None:
+            return
+
         path_msg = Path()
-        path_msg.header.frame_id = 'world'  # or 'odom'
+        path_msg.header.frame_id = 'world'
         path_msg.header.stamp = self.get_clock().now().to_msg()
 
-        for x, y, yaw in zip(self.path_points_x_record,
-                             self.path_points_y_record,
-                             self.path_points_yaw_record):
+        for x, y, yaw_deg in zip(self.static_path['x'],
+                                 self.static_path['y'],
+                                 self.static_path['yaw_deg']):
             pose = PoseStamped()
             pose.header.frame_id = 'world'
             pose.header.stamp = self.get_clock().now().to_msg()
-            pose.pose.position.x = x
-            pose.pose.position.y = y
+            pose.pose.position.x = float(x)
+            pose.pose.position.y = float(y)
             pose.pose.position.z = 0.0
 
-            # Convert yaw to quaternion
-            pose.pose.orientation.z = sin(yaw / 2.0)
-            pose.pose.orientation.w = cos(yaw / 2.0)
+            yaw_rad = math.radians(yaw_deg)
+            pose.pose.orientation.z = sin(yaw_rad / 2.0)
+            pose.pose.orientation.w = cos(yaw_rad / 2.0)
 
             path_msg.poses.append(pose)
 
         self.path_pub.publish(path_msg)
         self.get_logger().debug(f'Published {len(path_msg.poses)} waypoints to RViz.')
 
-    def find_angle(self, v1, v2):
-        cosang = np.dot(v1, v2)
-        sinang = la.norm(np.cross(v1, v2))
-        return np.arctan2(sinang, cosang)
+    def get_active_path(self) -> Optional[Dict[str, np.ndarray]]:
+        if self.use_path_topic and self.dynamic_path is not None and self.dynamic_path_stamp is not None:
+            age = (self.get_clock().now() - self.dynamic_path_stamp).nanoseconds * 1e-9
+            if age <= self.dynamic_path_timeout:
+                return self.dynamic_path
+        return self.static_path
 
-    def dist(self, p1, p2):
-        return round(math.sqrt((p1[0] - p2[0])**2 + (p1[1] - p2[1])**2), 3)
+    def select_goal_index(self, dx: np.ndarray, dy: np.ndarray, dists: np.ndarray) -> Optional[int]:
+        if dists.size == 0:
+            return None
+
+        heading = np.array([math.cos(self.yaw), math.sin(self.yaw)])
+        diffs = np.abs(dists - self.look_ahead)
+        ordered_indices = np.argsort(diffs)
+
+        for idx in ordered_indices:
+            ahead = dx[idx] * heading[0] + dy[idx] * heading[1]
+            if ahead > 0:
+                return int(idx)
+
+        return int(ordered_indices[0]) if ordered_indices.size > 0 else None
+
+    def selected_path_callback(self, msg: Path) -> None:
+        arrays = self.path_msg_to_arrays(msg)
+        if arrays is None:
+            return
+        self.dynamic_path = arrays
+        self.dynamic_path_stamp = Time.from_msg(msg.header.stamp)
+
+    def vision_flag_callback(self, msg: Bool) -> None:
+        self.vision_path_active = bool(msg.data)
+
+    def path_msg_to_arrays(self, path_msg: Path) -> Optional[Dict[str, np.ndarray]]:
+        if not path_msg.poses:
+            self.get_logger().warn('Received empty path message')
+            return None
+
+        xs: List[float] = []
+        ys: List[float] = []
+        yaw_deg: List[float] = []
+        for pose in path_msg.poses:
+            xs.append(pose.pose.position.x)
+            ys.append(pose.pose.position.y)
+            quat = pose.pose.orientation
+            yaw = euler_from_quaternion([quat.x, quat.y, quat.z, quat.w])[2]
+            yaw_deg.append(math.degrees(yaw))
+
+        return {
+            'x': np.array(xs, dtype=np.float32),
+            'y': np.array(ys, dtype=np.float32),
+            'yaw_deg': np.array(yaw_deg, dtype=np.float32)
+        }
 
     def timer_callback(self):
-        path_points_x = np.array(self.path_points_x_record)
-        path_points_y = np.array(self.path_points_y_record)
+        path = self.get_active_path()
+        if path is None:
+            self.get_logger().warn('No path available for pure pursuit')
+            return
 
+        path_x = path['x']
+        path_y = path['y']
+        path_yaw_deg = path['yaw_deg']
 
-        # Calculate distances from current position to all waypoints
-        for i in range(len(path_points_x)):
-            self.dist_arr[i] = self.dist((path_points_x[i], path_points_y[i]), (self.x, self.y))
+        if path_x.size == 0:
+            self.get_logger().warn('Active path is empty')
+            return
 
-        # Find candidate points within lookahead range ± 0.05 m
-        goal_arr = np.where(
-            (self.dist_arr < self.look_ahead + 0.15) &
-            (self.dist_arr > self.look_ahead - 0.15)
-        )[0]
+        dx = path_x - self.x
+        dy = path_y - self.y
+        dists = np.hypot(dx, dy)
 
-        # Find goal point ahead of the vehicle
-        for idx in goal_arr:
-            v1 = [path_points_x[idx] - self.x, path_points_y[idx] - self.y]
-            v2 = [math.cos(self.yaw), math.sin(self.yaw)]
-            temp_angle = self.find_angle(v1, v2)
-            if abs(temp_angle) < math.pi / 2:
-                self.goal = idx
-                break
+        goal_idx = self.select_goal_index(dx, dy, dists)
+        if goal_idx is None:
+            self.get_logger().warn('Unable to find lookahead point')
+            return
 
-        L = self.dist_arr[self.goal]
-        alpha = math.radians(self.path_points_yaw_record[self.goal]) - self.yaw
+        L = float(max(dists[goal_idx], 1e-3))
+        alpha = math.radians(float(path_yaw_deg[goal_idx])) - self.yaw
+        steering = math.atan((self.curvature_gain * 2.0 * self.wheelbase * math.sin(alpha)) / L)
+        f_delta = float(np.clip(steering, -self.steering_limit, self.steering_limit))
 
-        # Pure Pursuit control law tuning parameters
-        k = 0.5
-        angle_i = math.atan((k * 2 * self.wheelbase * math.sin(alpha)) / L)
-        angle = angle_i * 2
-
-        f_delta = round(np.clip(angle, -0.3, 0.3), 3)
-        f_delta_deg = round(math.degrees(f_delta))
-
-        self.get_logger().debug(f"Current index: {self.goal}")
-        ct_error = round(math.sin(alpha) * L, 3)
-        self.get_logger().debug(f"Crosstrack Error: {ct_error}")
-        self.get_logger().debug(f"Front steering angle: {f_delta_deg} degrees\n")
+        if self.use_path_topic:
+            target_speed = self.fast_speed if self.vision_path_active else self.slow_speed
+        else:
+            target_speed = self.fast_speed
 
         self.drive_msg.header.stamp = self.get_clock().now().to_msg()
         self.drive_msg.drive.steering_angle = f_delta
+        self.drive_msg.drive.speed = target_speed
+
+        if self.log_debug_enabled:
+            ct_error = math.sin(alpha) * L
+            self.get_logger().debug(
+                f"goal_idx={goal_idx} dist={L:.3f} alpha={math.degrees(alpha):.2f}deg "
+                f"steer={math.degrees(f_delta):.2f}deg ct_error={ct_error:.3f}"
+            )
 
         self.ctrl_pub.publish(self.drive_msg)
         # print("From timer_callback: Published drive message with steering angle:", f_delta_deg)
