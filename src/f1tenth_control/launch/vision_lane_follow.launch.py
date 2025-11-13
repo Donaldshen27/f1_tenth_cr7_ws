@@ -49,6 +49,10 @@ def generate_launch_description():
                 'odom_topic': odom_topic,
             },
         ],
+        remappings=[
+            ('/car1/camera/color/image_raw', '/car1/D435i/color/image_raw'),
+            ('/car1/camera/color/camera_info', '/car1/D435i/color/camera_info'),
+        ],
     )
 
     lane_path_mux_node = Node(
