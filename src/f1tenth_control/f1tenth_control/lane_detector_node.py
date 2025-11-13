@@ -100,7 +100,7 @@ class LaneDetectorNode(Node):
             Odometry,
             self.get_parameter('odom_topic').value,
             self.odom_callback,
-            qos_profile_sensor_data,
+            10,
         )
 
         self.get_logger().info('Lane detector node initialized')
@@ -111,6 +111,8 @@ class LaneDetectorNode(Node):
         self.latest_camera_info = msg
 
     def odom_callback(self, msg: Odometry) -> None:
+        if self.latest_odom is None:
+            self.get_logger().info('First odometry message received!')
         self.latest_odom = msg
 
     def image_callback(self, msg: Image) -> None:
