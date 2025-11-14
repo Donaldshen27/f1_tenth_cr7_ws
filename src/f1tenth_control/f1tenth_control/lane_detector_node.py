@@ -151,7 +151,7 @@ class LaneDetectorNode(Node):
         self.path_pub.publish(path_msg)
 
         if self.publish_debug_image and self.debug_pub is not None:
-            debug_img = self.create_debug_overlay(roi, mask, lane_points_px, offsets)
+            debug_img = self.create_debug_overlay(roi, mask, lane_points_px, ground_points, offsets)
             debug_msg = self.bridge.cv2_to_imgmsg(debug_img, encoding='bgr8')
             debug_msg.header = msg.header
             self.debug_pub.publish(debug_msg)
@@ -298,17 +298,23 @@ class LaneDetectorNode(Node):
         return math.atan2(dy, dx)
 
     def create_debug_overlay(self, roi: np.ndarray, mask: np.ndarray,
-                             points: Sequence[Tuple[float, float]], offsets: Tuple[int, int]) -> np.ndarray:
+                             points: Sequence[Tuple[float, float]],
+                             ground_coords: Sequence[Tuple[float, float]],
+                             offsets: Tuple[int, int]) -> np.ndarray:
         mask_color = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
         overlay = cv2.addWeighted(roi, 0.6, mask_color, 0.4, 0)
-        for x_pix, y_pix in points:
-            cv2.circle(
-                overlay,
-                (int(x_pix - offsets[0]), int(y_pix - offsets[1])),
-                4,
-                (0, 0, 255),
-                -1,
-            )
+        for i, (x_pix, y_pix) in enumerate(points):
+            # Draw red dot
+            dot_pos = (int(x_pix - offsets[0]), int(y_pix - offsets[1]))
+            cv2.circle(overlay, dot_pos, 4, (0, 0, 255), -1)
+
+            # Draw ground coordinate label next to dot
+            if i < len(ground_coords):
+                gnd_x, gnd_y = ground_coords[i]
+                label = f"({gnd_x:.2f},{gnd_y:+.2f})"
+                text_pos = (dot_pos[0] + 8, dot_pos[1] - 5)
+                cv2.putText(overlay, label, text_pos,
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0, 255, 255), 1)
         return overlay
 
     def _load_homography(self) -> np.ndarray:

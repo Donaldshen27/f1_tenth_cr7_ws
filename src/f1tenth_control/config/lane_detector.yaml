@@ -1,7 +1,7 @@
 lane_detector:
   ros__parameters:
-    image_topic: "/car1/camera/color/image_raw"
-    camera_info_topic: "/car1/camera/color/camera_info"
+    image_topic: "/car1/D435i/color/image_raw"
+    camera_info_topic: "/car1/D435i/color/camera_info"
     odom_topic: "/car1/odom"
     path_topic: "lane_center_path"
     confidence_topic: "lane_confidence"
@@ -21,8 +21,8 @@ lane_detector:
     smoothing_window: 5
     min_points: 4
     pixel_to_ground_homography: [
-      1.0, 0.0, 0.0,
-      0.0, 1.0, 0.0,
-      0.0, 0.0, 1.0
+      0.00003,  0.00175, -0.97424,
+      0.00060,  0.00020, -0.47260,
+     -0.00026, -0.00325,  1.00000
     ]
     output_frame: "odom"
