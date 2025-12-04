@@ -22,6 +22,7 @@ def generate_launch_description():
         DeclareLaunchArgument('start_cam', default_value='true'),
         DeclareLaunchArgument('start_lidar', default_value='false'),
         DeclareLaunchArgument('start_visualization', default_value='false'),
+        DeclareLaunchArgument('start_mocap', default_value='false'),  # Disabled by default for odom-free mode
         DeclareLaunchArgument('camera_image_topic', default_value='/car1/camera/color/image_raw'),
         DeclareLaunchArgument('camera_info_topic', default_value='/car1/camera/color/camera_info'),
         DeclareLaunchArgument('odom_topic', default_value='/car1/odom'),
@@ -31,6 +32,7 @@ def generate_launch_description():
     start_cam = LaunchConfiguration('start_cam')
     start_lidar = LaunchConfiguration('start_lidar')
     start_visualization = LaunchConfiguration('start_visualization')
+    start_mocap = LaunchConfiguration('start_mocap')
 
     camera_image_topic = LaunchConfiguration('camera_image_topic')
     camera_info_topic = LaunchConfiguration('camera_info_topic')
@@ -80,6 +82,7 @@ def generate_launch_description():
         name='motion_capture_tracking',
         output='screen',
         parameters=[mocap_config],
+        condition=IfCondition(start_mocap),
     )
 
     urg_node = Node(

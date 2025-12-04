@@ -32,4 +32,5 @@ lane_detector:
     homography_swap_xy: false
     homography_negate_x: false
     homography_negate_y: false
-    output_frame: "odom"
+    output_frame: "base_link"
+    use_odom: false  # Set to false for odom-free vision-only lane following

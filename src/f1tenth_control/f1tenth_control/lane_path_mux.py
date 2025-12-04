@@ -32,9 +32,9 @@ class LanePathMux(Node):
         self.declare_parameter('static_path_topic', 'waypoints_path')
         self.declare_parameter('selected_path_topic', 'selected_path')
         self.declare_parameter('vision_active_topic', 'vision_path_active')
-        self.declare_parameter('min_lane_confidence', 0.35)
+        self.declare_parameter('min_lane_confidence', 0.01)  # Lowered - rely on min_lane_points instead
         self.declare_parameter('lane_path_timeout', 0.25)
-        self.declare_parameter('publish_rate_hz', 20.0)
+        self.declare_parameter('publish_rate_hz', 50.0)
         self.declare_parameter('min_lane_points', 4)
 
         # Internal storage ----------------------------------------------------
@@ -102,9 +102,8 @@ class LanePathMux(Node):
         min_points = int(self.get_parameter('min_lane_points').value)
 
         now = self.get_clock().now()
-        vision_active = False
-        selected = self.latest_static_path
 
+        # Only use lane path - no static waypoint fallback (for odom-free mode)
         if self.latest_lane_path is not None:
             path_age = now - self.latest_lane_path.stamp
             lane_valid = (
@@ -113,10 +112,10 @@ class LanePathMux(Node):
                 and path_age <= lane_timeout
             )
             if lane_valid:
-                selected = self.latest_lane_path
-                vision_active = True
+                return self.latest_lane_path, True
 
-        return selected, vision_active
+        # No valid lane path - return None (car will stop safely)
+        return None, False
 
 
 def main(args=None):

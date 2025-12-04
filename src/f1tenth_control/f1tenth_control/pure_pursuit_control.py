@@ -22,7 +22,8 @@ class PurePursuit(Node):
     def __init__(self):
         super().__init__('vicon_pp_node')
 
-        self.rate_hz = 50
+        # Control rate will be set after parameter declaration
+        self.rate_hz = 50.0
         self.timer_period = 1.0 / self.rate_hz
 
         self.declare_parameter('look_ahead', 0.3)
@@ -36,6 +37,8 @@ class PurePursuit(Node):
         self.declare_parameter('selected_path_topic', 'selected_path')
         self.declare_parameter('static_waypoints_file', 'xyhead_demo_pp.csv')
         self.declare_parameter('log_debug', False)
+        self.declare_parameter('control_rate_hz', 50.0)
+        self.declare_parameter('use_odom', True)  # Set False for odom-free vision-only mode
 
         self.look_ahead = float(self.get_parameter('look_ahead').value)
         self.wheelbase = float(self.get_parameter('wheelbase').value)
@@ -48,6 +51,9 @@ class PurePursuit(Node):
         self.selected_path_topic = self.get_parameter('selected_path_topic').value
         self.static_waypoints_file = self.get_parameter('static_waypoints_file').value
         self.log_debug_enabled = bool(self.get_parameter('log_debug').value)
+        self.rate_hz = float(self.get_parameter('control_rate_hz').value)
+        self.timer_period = 1.0 / self.rate_hz
+        self.use_odom = bool(self.get_parameter('use_odom').value)
 
         self.x = 0.0
         self.y = 0.0
@@ -106,8 +112,8 @@ class PurePursuit(Node):
         self.y = msg.pose.pose.position.y
         q = msg.pose.pose.orientation
         _, _, self.yaw = euler_from_quaternion([q.x, q.y, q.z, q.w])
-        self.drive_msg.drive.speed = 1.0  # set constant speed only if you have odometry
-        self.get_logger().warn(f"Received state: x={self.x}, y={self.y}, yaw={self.yaw}")
+        if self.log_debug_enabled:
+            self.get_logger().debug(f"Received state: x={self.x:.3f}, y={self.y:.3f}, yaw={self.yaw:.3f}")
 
     def load_waypoints_from_file(self, filename: str) -> Optional[Dict[str, np.ndarray]]:
         package_share_directory = get_package_share_directory('f1tenth_control')
@@ -170,11 +176,11 @@ class PurePursuit(Node):
         # Static waypoint mode (use_path_topic=False)
         return self.static_path
 
-    def select_goal_index(self, dx: np.ndarray, dy: np.ndarray, dists: np.ndarray) -> Optional[int]:
+    def select_goal_index_for_yaw(self, dx: np.ndarray, dy: np.ndarray, dists: np.ndarray, yaw: float) -> Optional[int]:
         if dists.size == 0:
             return None
 
-        heading = np.array([math.cos(self.yaw), math.sin(self.yaw)])
+        heading = np.array([math.cos(yaw), math.sin(yaw)])
         diffs = np.abs(dists - self.look_ahead)
         ordered_indices = np.argsort(diffs)
 
@@ -219,7 +225,7 @@ class PurePursuit(Node):
     def timer_callback(self):
         path = self.get_active_path()
         if path is None:
-            self.get_logger().warn('No path available - stopping car')
+            self.get_logger().warn('No path available - stopping car', throttle_duration_sec=1.0)
             self.drive_msg.header.stamp = self.get_clock().now().to_msg()
             self.drive_msg.drive.steering_angle = 0.0
             self.drive_msg.drive.speed = 0.0
@@ -230,20 +236,26 @@ class PurePursuit(Node):
         path_y = path['y']
 
         if path_x.size == 0:
-            self.get_logger().warn('Active path is empty - stopping car')
+            self.get_logger().warn('Active path is empty - stopping car', throttle_duration_sec=1.0)
             self.drive_msg.header.stamp = self.get_clock().now().to_msg()
             self.drive_msg.drive.steering_angle = 0.0
             self.drive_msg.drive.speed = 0.0
             self.ctrl_pub.publish(self.drive_msg)
             return
 
-        dx = path_x - self.x
-        dy = path_y - self.y
+        # In odom-free mode, car is always at origin with yaw=0 (base_link frame)
+        if self.use_odom:
+            car_x, car_y, car_yaw = self.x, self.y, self.yaw
+        else:
+            car_x, car_y, car_yaw = 0.0, 0.0, 0.0
+
+        dx = path_x - car_x
+        dy = path_y - car_y
         dists = np.hypot(dx, dy)
 
-        goal_idx = self.select_goal_index(dx, dy, dists)
+        goal_idx = self.select_goal_index_for_yaw(dx, dy, dists, car_yaw)
         if goal_idx is None:
-            self.get_logger().warn('Unable to find lookahead point - stopping car')
+            self.get_logger().warn('Unable to find lookahead point - stopping car', throttle_duration_sec=1.0)
             self.drive_msg.header.stamp = self.get_clock().now().to_msg()
             self.drive_msg.drive.steering_angle = 0.0
             self.drive_msg.drive.speed = 0.0
@@ -252,7 +264,7 @@ class PurePursuit(Node):
 
         L = float(max(dists[goal_idx], 1e-3))
         # Geometric pure pursuit: alpha is angle from vehicle heading to lookahead point
-        alpha = math.atan2(dy[goal_idx], dx[goal_idx]) - self.yaw
+        alpha = math.atan2(dy[goal_idx], dx[goal_idx]) - car_yaw
         # Standard pure pursuit steering formula
         steering = math.atan2(2.0 * self.wheelbase * math.sin(alpha), L)
         f_delta = float(np.clip(steering, -self.steering_limit, self.steering_limit))

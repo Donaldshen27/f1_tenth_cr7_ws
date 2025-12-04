@@ -60,11 +60,13 @@ class LaneDetectorNode(Node):
         self.declare_parameter('homography_negate_x', False)  # Negate X after homography (and swap if enabled)
         self.declare_parameter('homography_negate_y', False)  # Negate Y after homography (and swap if enabled)
         self.declare_parameter('output_frame', 'odom')
+        self.declare_parameter('use_odom', True)  # Set False for odom-free vision-only mode
 
         self.bridge = CvBridge()
         self.latest_odom: Odometry | None = None
         self.latest_camera_info: CameraInfo | None = None
         self._missing_odom_warned = False
+        self.use_odom = bool(self.get_parameter('use_odom').value)
 
         self.pixel_to_ground_h = self._load_homography()
         x_offset = float(self.get_parameter('ground_x_offset').value)
@@ -123,7 +125,8 @@ class LaneDetectorNode(Node):
         self.latest_odom = msg
 
     def image_callback(self, msg: Image) -> None:
-        if self.latest_odom is None:
+        # Only require odometry if use_odom is enabled
+        if self.use_odom and self.latest_odom is None:
             if not self._missing_odom_warned:
                 self.get_logger().warn('No odometry yet; skipping frame')
                 self._missing_odom_warned = True
@@ -149,11 +152,15 @@ class LaneDetectorNode(Node):
         if not ground_points:
             return
 
-        world_points = self.transform_to_world_frame(ground_points)
-        if not world_points:
-            return
+        # In odom-free mode, use ground points directly (already in base_link frame)
+        if self.use_odom:
+            path_points = self.transform_to_world_frame(ground_points)
+            if not path_points:
+                return
+        else:
+            path_points = ground_points
 
-        smoothed = self.smooth_path(world_points)
+        smoothed = self.smooth_path(path_points)
         path_msg = self.points_to_path(smoothed, msg)
         self.path_pub.publish(path_msg)
 

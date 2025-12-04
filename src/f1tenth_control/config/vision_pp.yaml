@@ -3,7 +3,7 @@ pure_pursuit_control:
     look_ahead: 0.35
     wheelbase: 0.325
     curvature_gain: 0.5
-    steering_limit: 0.35
+    steering_limit: 0.26  # ~15 deg, matches servo limits (0.15-0.85)
     fast_speed: 1.0
     slow_speed: 0.4
     dynamic_path_timeout: 0.25
@@ -11,3 +11,5 @@ pure_pursuit_control:
     selected_path_topic: "selected_path"
     static_waypoints_file: "xyhead_demo_pp.csv"
     log_debug: false
+    control_rate_hz: 50.0
+    use_odom: false  # Set to false for odom-free vision-only lane following
