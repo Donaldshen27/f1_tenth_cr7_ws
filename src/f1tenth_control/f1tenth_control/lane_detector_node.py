@@ -54,6 +54,11 @@ class LaneDetectorNode(Node):
         self.declare_parameter('pixel_to_ground_homography', [1.0, 0.0, 0.0,
                                                               0.0, 1.0, 0.0,
                                                               0.0, 0.0, 1.0])
+        self.declare_parameter('ground_x_offset', 0.0)  # Offset to add to X coordinate (meters)
+        # Axis conversion parameters to convert homography output to robot frame (x=forward, y=left)
+        self.declare_parameter('homography_swap_xy', False)  # Swap X and Y after homography
+        self.declare_parameter('homography_negate_x', False)  # Negate X after homography (and swap if enabled)
+        self.declare_parameter('homography_negate_y', False)  # Negate Y after homography (and swap if enabled)
         self.declare_parameter('output_frame', 'odom')
 
         self.bridge = CvBridge()
@@ -62,6 +67,8 @@ class LaneDetectorNode(Node):
         self._missing_odom_warned = False
 
         self.pixel_to_ground_h = self._load_homography()
+        x_offset = float(self.get_parameter('ground_x_offset').value)
+        self.get_logger().info(f"Ground X offset: {x_offset}m")
 
         # Publishers -----------------------------------------------------------
         self.path_pub = self.create_publisher(
@@ -151,7 +158,7 @@ class LaneDetectorNode(Node):
         self.path_pub.publish(path_msg)
 
         if self.publish_debug_image and self.debug_pub is not None:
-            debug_img = self.create_debug_overlay(roi, mask, lane_points_px, ground_points, offsets)
+            debug_img = self.create_debug_overlay(roi, mask, lane_points_px, offsets)
             debug_msg = self.bridge.cv2_to_imgmsg(debug_img, encoding='bgr8')
             debug_msg.header = msg.header
             self.debug_pub.publish(debug_msg)
@@ -225,11 +232,46 @@ class LaneDetectorNode(Node):
         self.confidence_pub.publish(msg)
 
     def project_pixels_to_ground(self, pixels: Sequence[Tuple[float, float]]) -> List[Tuple[float, float]]:
+        """Project pixel coordinates to ground plane in robot frame (x=forward, y=left).
+
+        Input pixels are (u, v) = (column, row) in image coordinates.
+
+        The homography maps (u, v) to ground coordinates. Use the axis parameters
+        to convert to robot frame:
+          - homography_swap_xy: swap X and Y after homography
+          - homography_negate_x: negate X (after swap if enabled)
+          - homography_negate_y: negate Y (after swap if enabled)
+
+        Example configurations:
+          - Homography outputs robot frame directly: all False (default)
+          - Homography outputs (right, forward): swap_xy=True, negate_y=True
+        """
         if not pixels:
             return []
         pts = np.array(pixels, dtype=np.float32).reshape(-1, 1, 2)
         projected = cv2.perspectiveTransform(pts, self.pixel_to_ground_h)
-        return [(float(p[0][0]), float(p[0][1])) for p in projected]
+
+        swap_xy = bool(self.get_parameter('homography_swap_xy').value)
+        negate_x = bool(self.get_parameter('homography_negate_x').value)
+        negate_y = bool(self.get_parameter('homography_negate_y').value)
+        x_offset = float(self.get_parameter('ground_x_offset').value)
+
+        result = []
+        for p in projected:
+            x, y = float(p[0][0]), float(p[0][1])
+            if swap_xy:
+                x, y = y, x
+            if negate_x:
+                x = -x
+            if negate_y:
+                y = -y
+            # Apply offset after all transformations
+            x += x_offset
+            result.append((x, y))
+
+        if len(result) > 0:
+            self.get_logger().info(f"First point: raw=({projected[0][0][0]:.2f}, {projected[0][0][1]:.2f}), final=({result[0][0]:.2f}, {result[0][1]:.2f})", throttle_duration_sec=2.0)
+        return result
 
     def smooth_path(self, points: Sequence[Tuple[float, float]]) -> List[Tuple[float, float]]:
         window = max(1, int(self.get_parameter('smoothing_window').value))
@@ -298,23 +340,17 @@ class LaneDetectorNode(Node):
         return math.atan2(dy, dx)
 
     def create_debug_overlay(self, roi: np.ndarray, mask: np.ndarray,
-                             points: Sequence[Tuple[float, float]],
-                             ground_coords: Sequence[Tuple[float, float]],
-                             offsets: Tuple[int, int]) -> np.ndarray:
+                             points: Sequence[Tuple[float, float]], offsets: Tuple[int, int]) -> np.ndarray:
         mask_color = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
         overlay = cv2.addWeighted(roi, 0.6, mask_color, 0.4, 0)
-        for i, (x_pix, y_pix) in enumerate(points):
-            # Draw red dot
-            dot_pos = (int(x_pix - offsets[0]), int(y_pix - offsets[1]))
-            cv2.circle(overlay, dot_pos, 4, (0, 0, 255), -1)
-
-            # Draw ground coordinate label next to dot
-            if i < len(ground_coords):
-                gnd_x, gnd_y = ground_coords[i]
-                label = f"({gnd_x:.2f},{gnd_y:+.2f})"
-                text_pos = (dot_pos[0] + 8, dot_pos[1] - 5)
-                cv2.putText(overlay, label, text_pos,
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0, 255, 255), 1)
+        for x_pix, y_pix in points:
+            cv2.circle(
+                overlay,
+                (int(x_pix - offsets[0]), int(y_pix - offsets[1])),
+                4,
+                (0, 0, 255),
+                -1,
+            )
         return overlay
 
     def _load_homography(self) -> np.ndarray:

@@ -25,4 +25,11 @@ lane_detector:
       0.00060,  0.00020, -0.47260,
      -0.00026, -0.00325,  1.00000
     ]
+    ground_x_offset: 0.6  # Add 0.6m to X coordinates (adjust based on calibration)
+    # Axis conversion: convert homography output to robot frame (x=forward, y=left)
+    # After homography, apply: 1) swap if enabled, 2) negate x, 3) negate y
+    # Example: homography outputs (right, forward) -> set swap_xy=true, negate_y=true
+    homography_swap_xy: false
+    homography_negate_x: false
+    homography_negate_y: false
     output_frame: "odom"

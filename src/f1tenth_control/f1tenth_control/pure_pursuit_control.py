@@ -159,10 +159,15 @@ class PurePursuit(Node):
         self.get_logger().debug(f'Published {len(path_msg.poses)} waypoints to RViz.')
 
     def get_active_path(self) -> Optional[Dict[str, np.ndarray]]:
-        if self.use_path_topic and self.dynamic_path is not None and self.dynamic_path_stamp is not None:
-            age = (self.get_clock().now() - self.dynamic_path_stamp).nanoseconds * 1e-9
-            if age <= self.dynamic_path_timeout:
-                return self.dynamic_path
+        if self.use_path_topic:
+            # Camera-only mode: only use dynamic path, no static fallback
+            if self.dynamic_path is not None and self.dynamic_path_stamp is not None:
+                age = (self.get_clock().now() - self.dynamic_path_stamp).nanoseconds * 1e-9
+                if age <= self.dynamic_path_timeout:
+                    return self.dynamic_path
+            # No valid dynamic path - return None (car will stop)
+            return None
+        # Static waypoint mode (use_path_topic=False)
         return self.static_path
 
     def select_goal_index(self, dx: np.ndarray, dy: np.ndarray, dists: np.ndarray) -> Optional[int]:
@@ -214,15 +219,22 @@ class PurePursuit(Node):
     def timer_callback(self):
         path = self.get_active_path()
         if path is None:
-            self.get_logger().warn('No path available for pure pursuit')
+            self.get_logger().warn('No path available - stopping car')
+            self.drive_msg.header.stamp = self.get_clock().now().to_msg()
+            self.drive_msg.drive.steering_angle = 0.0
+            self.drive_msg.drive.speed = 0.0
+            self.ctrl_pub.publish(self.drive_msg)
             return
 
         path_x = path['x']
         path_y = path['y']
-        path_yaw_deg = path['yaw_deg']
 
         if path_x.size == 0:
-            self.get_logger().warn('Active path is empty')
+            self.get_logger().warn('Active path is empty - stopping car')
+            self.drive_msg.header.stamp = self.get_clock().now().to_msg()
+            self.drive_msg.drive.steering_angle = 0.0
+            self.drive_msg.drive.speed = 0.0
+            self.ctrl_pub.publish(self.drive_msg)
             return
 
         dx = path_x - self.x
@@ -231,22 +243,23 @@ class PurePursuit(Node):
 
         goal_idx = self.select_goal_index(dx, dy, dists)
         if goal_idx is None:
-            self.get_logger().warn('Unable to find lookahead point')
+            self.get_logger().warn('Unable to find lookahead point - stopping car')
+            self.drive_msg.header.stamp = self.get_clock().now().to_msg()
+            self.drive_msg.drive.steering_angle = 0.0
+            self.drive_msg.drive.speed = 0.0
+            self.ctrl_pub.publish(self.drive_msg)
             return
 
         L = float(max(dists[goal_idx], 1e-3))
-        alpha = math.radians(float(path_yaw_deg[goal_idx])) - self.yaw
-        steering = math.atan((self.curvature_gain * 2.0 * self.wheelbase * math.sin(alpha)) / L)
+        # Geometric pure pursuit: alpha is angle from vehicle heading to lookahead point
+        alpha = math.atan2(dy[goal_idx], dx[goal_idx]) - self.yaw
+        # Standard pure pursuit steering formula
+        steering = math.atan2(2.0 * self.wheelbase * math.sin(alpha), L)
         f_delta = float(np.clip(steering, -self.steering_limit, self.steering_limit))
-
-        if self.use_path_topic:
-            target_speed = self.fast_speed if self.vision_path_active else self.slow_speed
-        else:
-            target_speed = self.fast_speed
 
         self.drive_msg.header.stamp = self.get_clock().now().to_msg()
         self.drive_msg.drive.steering_angle = f_delta
-        self.drive_msg.drive.speed = target_speed
+        self.drive_msg.drive.speed = self.fast_speed
 
         if self.log_debug_enabled:
             ct_error = math.sin(alpha) * L
