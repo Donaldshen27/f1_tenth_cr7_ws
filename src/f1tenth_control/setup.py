@@ -29,6 +29,7 @@ setup(
             'lane_detector_node = f1tenth_control.lane_detector_node:main',
             'lane_path_mux = f1tenth_control.lane_path_mux:main',
             'cone_detector_node = f1tenth_control.cone_detector_node:main',
+            'construction_zone_mux = f1tenth_control.construction_zone_mux:main',
         ],
     },
 )

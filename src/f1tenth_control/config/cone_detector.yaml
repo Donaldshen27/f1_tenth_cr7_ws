@@ -15,8 +15,8 @@ cone_detector:
 
     # Orange cone HSV range (calibrated 2025-12-05)
     # Your cones are deep red (hue 0-2), high saturation
-    hsv_lower: [0, 170, 150]
-    hsv_upper: [10, 230, 235]
+    hsv_lower: [0, 212, 175]
+    hsv_upper: [179, 255, 243]
 
     # Contour filtering parameters
     min_contour_area: 100        # pixels, reject noise

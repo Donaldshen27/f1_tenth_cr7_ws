@@ -13,6 +13,8 @@ def generate_launch_description():
     config_dir = PathJoinSubstitution([FindPackageShare('f1tenth_control'), 'config'])
 
     lane_detector_config = PathJoinSubstitution([config_dir, 'lane_detector.yaml'])
+    cone_detector_config = PathJoinSubstitution([config_dir, 'cone_detector.yaml'])
+    construction_zone_mux_config = PathJoinSubstitution([config_dir, 'construction_zone_mux.yaml'])
     pure_pursuit_config = PathJoinSubstitution([config_dir, 'vision_pp.yaml'])
     camera_config = PathJoinSubstitution([config_dir, 'camera.yaml'])
     mocap_config = PathJoinSubstitution([FindPackageShare('motion_capture_tracking'), 'config', 'cfg.yaml'])
@@ -57,11 +59,20 @@ def generate_launch_description():
         ],
     )
 
-    lane_path_mux_node = Node(
+    cone_detector_node = Node(
         package='f1tenth_control',
-        executable='lane_path_mux',
-        name='lane_path_mux',
+        executable='cone_detector_node',
+        name='cone_detector',
         output='screen',
+        parameters=[cone_detector_config],
+    )
+
+    construction_zone_mux_node = Node(
+        package='f1tenth_control',
+        executable='construction_zone_mux',
+        name='construction_zone_mux',
+        output='screen',
+        parameters=[construction_zone_mux_config],
     )
 
     pure_pursuit_node = Node(
@@ -142,7 +153,8 @@ def generate_launch_description():
     ld.add_action(teleop_launch)
     ld.add_action(visualization_launch)
     ld.add_action(lane_detector_node)
-    ld.add_action(lane_path_mux_node)
+    ld.add_action(cone_detector_node)
+    ld.add_action(construction_zone_mux_node)
     ld.add_action(pure_pursuit_node)
     ld.add_action(static_transform_node)
 
