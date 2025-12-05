@@ -28,6 +28,7 @@ setup(
             'waypoint_recorder = f1tenth_control.waypoint_recorder:main',
             'lane_detector_node = f1tenth_control.lane_detector_node:main',
             'lane_path_mux = f1tenth_control.lane_path_mux:main',
+            'cone_detector_node = f1tenth_control.cone_detector_node:main',
         ],
     },
 )
