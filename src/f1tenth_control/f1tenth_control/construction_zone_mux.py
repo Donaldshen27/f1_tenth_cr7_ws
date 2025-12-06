@@ -45,6 +45,7 @@ class ConstructionZoneMux(Node):
         # Transition parameters ------------------------------------------------
         self.declare_parameter('entry_threshold', 0.4)
         self.declare_parameter('exit_threshold', 0.2)
+        self.declare_parameter('lane_exit_threshold', 0.04)
         self.declare_parameter('hysteresis_frames', 5)
         self.declare_parameter('require_lane_on_exit', True)
         self.declare_parameter('publish_rate_hz', 50.0)
@@ -118,6 +119,7 @@ class ConstructionZoneMux(Node):
         """Update state machine based on current confidence values and hysteresis counters."""
         entry_thresh = float(self.get_parameter('entry_threshold').value)
         exit_thresh = float(self.get_parameter('exit_threshold').value)
+        lane_exit_thresh = float(self.get_parameter('lane_exit_threshold').value)
         hysteresis = int(self.get_parameter('hysteresis_frames').value)
         require_lane = bool(self.get_parameter('require_lane_on_exit').value)
 
@@ -143,8 +145,7 @@ class ConstructionZoneMux(Node):
             exit_condition = self.latest_cone_confidence < exit_thresh
             if require_lane:
                 # Also require lane to be visible before exiting
-                min_lane_conf = 0.3
-                exit_condition = exit_condition and (self.latest_lane_confidence > min_lane_conf)
+                exit_condition = exit_condition and (self.latest_lane_confidence > lane_exit_thresh)
 
             if exit_condition:
                 self.exit_counter += 1
