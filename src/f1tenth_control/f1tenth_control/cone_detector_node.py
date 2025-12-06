@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
 
-"""Camera-based cone detector that publishes a corridor centerline path for pure pursuit."""
+"""Camera-based cone detector that publishes a corridor centerline path for pure pursuit.
+
+Simple approach: Find the two closest cones (one left, one right) at the bottom of the image
+and navigate to their midpoint. More robust than line fitting, especially in curves.
+"""
 
 from __future__ import annotations
 
 import math
-from typing import List, Sequence, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 import cv2
 import numpy as np
@@ -49,11 +53,8 @@ class ConeDetectorNode(Node):
         self.declare_parameter('morph_kernel_size', 5)
 
         # Corridor computation parameters -------------------------------------
-        self.declare_parameter('min_cones_per_side', 1)
-        self.declare_parameter('max_cone_pair_distance', 200)
-        self.declare_parameter('max_y_diff_for_pairing', 50)
-        self.declare_parameter('smoothing_window', 3)
-        self.declare_parameter('min_corridor_points', 2)
+        self.declare_parameter('min_cone_separation', 50)  # Min x-distance between left and right cone (pixels)
+        self.declare_parameter('max_cone_separation', 400)  # Max x-distance between left and right cone (pixels)
 
         # Homography parameters -----------------------------------------------
         self.declare_parameter('pixel_to_ground_homography', [1.0, 0.0, 0.0,
@@ -109,39 +110,46 @@ class ConeDetectorNode(Node):
             return
 
         mask = self.generate_cone_mask(roi)
-        left_cones, right_cones = self.detect_and_classify_cones(mask, offsets)
+        all_cones = self.detect_cones(mask, offsets)
 
-        confidence = self.compute_confidence(left_cones, right_cones)
+        # Find the closest left and right cones
+        left_cone, right_cone = self.find_closest_cone_pair(all_cones, offsets, mask.shape)
+
+        # Compute confidence based on whether we found a valid pair
+        confidence = self.compute_confidence(left_cone, right_cone)
         self.publish_confidence(confidence)
 
-        corridor_points_px = self.compute_corridor_centerline(left_cones, right_cones)
-
-        if len(corridor_points_px) < int(self.get_parameter('min_corridor_points').value):
-            self.get_logger().debug('Not enough corridor points detected', throttle_duration_sec=1.0)
-            # Publish empty path when no corridor detected
+        # Compute target point (midpoint between the two cones)
+        if left_cone is None or right_cone is None:
+            self.get_logger().debug('Could not find valid cone pair', throttle_duration_sec=1.0)
             empty_path = Path()
             empty_path.header.frame_id = self.get_parameter('output_frame').value
             empty_path.header.stamp = msg.header.stamp
             self.path_pub.publish(empty_path)
 
             if self.publish_debug_image and self.debug_pub is not None:
-                debug_img = self.create_debug_overlay(roi, mask, left_cones, right_cones, [], offsets)
+                debug_img = self.create_debug_overlay(roi, mask, left_cone, right_cone, None, offsets)
                 debug_msg = self.bridge.cv2_to_imgmsg(debug_img, encoding='bgr8')
                 debug_msg.header = msg.header
                 self.debug_pub.publish(debug_msg)
             return
 
-        ground_points = self.project_pixels_to_ground(corridor_points_px)
+        # Compute midpoint in pixel coordinates
+        mid_x = (left_cone[0] + right_cone[0]) / 2.0
+        mid_y = (left_cone[1] + right_cone[1]) / 2.0
+        target_px = [(mid_x, mid_y)]
+
+        # Project to ground plane
+        ground_points = self.project_pixels_to_ground(target_px)
         if not ground_points:
-            self.get_logger().debug('Failed to project corridor points to ground', throttle_duration_sec=1.0)
+            self.get_logger().debug('Failed to project target to ground', throttle_duration_sec=1.0)
             return
 
-        smoothed = self.smooth_path(ground_points)
-        path_msg = self.points_to_path(smoothed, msg)
+        path_msg = self.points_to_path(ground_points, msg)
         self.path_pub.publish(path_msg)
 
         if self.publish_debug_image and self.debug_pub is not None:
-            debug_img = self.create_debug_overlay(roi, mask, left_cones, right_cones, corridor_points_px, offsets)
+            debug_img = self.create_debug_overlay(roi, mask, left_cone, right_cone, (mid_x, mid_y), offsets)
             debug_msg = self.bridge.cv2_to_imgmsg(debug_img, encoding='bgr8')
             debug_msg.header = msg.header
             self.debug_pub.publish(debug_msg)
@@ -173,15 +181,14 @@ class ConeDetectorNode(Node):
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
         return mask
 
-    def detect_and_classify_cones(self, mask: np.ndarray, offsets: Tuple[int, int]) -> Tuple[List[Tuple[float, float]], List[Tuple[float, float]]]:
-        """Detect cone contours and classify as left or right of image center.
+    def detect_cones(self, mask: np.ndarray, offsets: Tuple[int, int]) -> List[Tuple[float, float]]:
+        """Detect all cone contours and return their centroids.
 
         Returns:
-            Tuple of (left_cones, right_cones) where each is a list of (x, y) pixel coordinates.
+            List of (x, y) pixel coordinates for all detected cones.
         """
         col_offset, row_offset = offsets
 
-        # Find contours
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
         min_area = float(self.get_parameter('min_contour_area').value)
@@ -189,14 +196,12 @@ class ConeDetectorNode(Node):
         min_aspect = float(self.get_parameter('min_aspect_ratio').value)
         max_aspect = float(self.get_parameter('max_aspect_ratio').value)
 
-        # Filter contours by area and aspect ratio
-        valid_cones: List[Tuple[float, float]] = []
+        cones: List[Tuple[float, float]] = []
         for contour in contours:
             area = cv2.contourArea(contour)
             if area < min_area or area > max_area:
                 continue
 
-            # Check aspect ratio
             x, y, w, h = cv2.boundingRect(contour)
             if h == 0:
                 continue
@@ -204,117 +209,98 @@ class ConeDetectorNode(Node):
             if aspect_ratio < min_aspect or aspect_ratio > max_aspect:
                 continue
 
-            # Use centroid of contour
             M = cv2.moments(contour)
             if M['m00'] == 0:
                 continue
             cx = float(M['m10'] / M['m00']) + col_offset
             cy = float(M['m01'] / M['m00']) + row_offset
-            valid_cones.append((cx, cy))
+            cones.append((cx, cy))
 
-        # Classify left/right based on image center
-        image_center_x = mask.shape[1] / 2.0 + col_offset
-        left_cones = [(x, y) for x, y in valid_cones if x < image_center_x]
-        right_cones = [(x, y) for x, y in valid_cones if x >= image_center_x]
+        return cones
 
-        # Sort cones by y-coordinate (top to bottom)
-        left_cones.sort(key=lambda p: p[1])
-        right_cones.sort(key=lambda p: p[1])
+    def find_closest_cone_pair(self, cones: List[Tuple[float, float]],
+                                offsets: Tuple[int, int],
+                                mask_shape: Tuple[int, ...]) -> Tuple[Optional[Tuple[float, float]], Optional[Tuple[float, float]]]:
+        """Find the closest left and right cones.
 
-        return left_cones, right_cones
-
-    def compute_corridor_centerline(self, left_cones: List[Tuple[float, float]],
-                                    right_cones: List[Tuple[float, float]]) -> List[Tuple[float, float]]:
-        """Compute centerline path by pairing left and right cones and finding midpoints.
-
-        Args:
-            left_cones: List of (x, y) pixel coordinates for left cones
-            right_cones: List of (x, y) pixel coordinates for right cones
+        Strategy:
+        1. Find the cone with the largest y-coordinate (closest to camera, bottom of image)
+        2. That cone is either left or right based on image center
+        3. Find the closest cone on the opposite side
 
         Returns:
-            List of (x, y) pixel coordinates for corridor centerline
+            Tuple of (left_cone, right_cone) or (None, None) if no valid pair found.
         """
-        min_cones = int(self.get_parameter('min_cones_per_side').value)
-        max_pair_dist = float(self.get_parameter('max_cone_pair_distance').value)
-        max_y_diff = float(self.get_parameter('max_y_diff_for_pairing').value)
+        if len(cones) < 2:
+            return None, None
 
-        # Need at least min_cones on each side
-        if len(left_cones) < min_cones or len(right_cones) < min_cones:
-            return []
+        col_offset, row_offset = offsets
+        image_center_x = mask_shape[1] / 2.0 + col_offset
+        min_sep = float(self.get_parameter('min_cone_separation').value)
+        max_sep = float(self.get_parameter('max_cone_separation').value)
 
-        centerline: List[Tuple[float, float]] = []
+        # Sort cones by y-coordinate descending (bottom of image = closest = first)
+        sorted_cones = sorted(cones, key=lambda c: -c[1])
 
-        # For each left cone, find the best matching right cone at similar y-level
-        for left_x, left_y in left_cones:
-            best_right = None
-            best_y_diff = float('inf')
+        # Find the closest cone (largest y)
+        closest_cone = sorted_cones[0]
 
-            for right_x, right_y in right_cones:
-                y_diff = abs(left_y - right_y)
-                lateral_dist = abs(right_x - left_x)
+        # Determine if it's left or right of center
+        if closest_cone[0] < image_center_x:
+            # Closest cone is on the left, find closest right cone
+            left_cone = closest_cone
+            right_cone = None
 
-                # Check if cones are at similar y-level and not too far apart
-                if y_diff < max_y_diff and lateral_dist < max_pair_dist:
-                    if y_diff < best_y_diff:
-                        best_y_diff = y_diff
-                        best_right = (right_x, right_y)
+            # Look for the closest cone on the right side with valid separation
+            for cone in sorted_cones[1:]:
+                if cone[0] >= image_center_x:
+                    separation = cone[0] - left_cone[0]
+                    if min_sep <= separation <= max_sep:
+                        right_cone = cone
+                        break
+        else:
+            # Closest cone is on the right, find closest left cone
+            right_cone = closest_cone
+            left_cone = None
 
-            if best_right is not None:
-                # Compute midpoint
-                mid_x = (left_x + best_right[0]) / 2.0
-                mid_y = (left_y + best_right[1]) / 2.0
-                centerline.append((mid_x, mid_y))
+            # Look for the closest cone on the left side with valid separation
+            for cone in sorted_cones[1:]:
+                if cone[0] < image_center_x:
+                    separation = right_cone[0] - cone[0]
+                    if min_sep <= separation <= max_sep:
+                        left_cone = cone
+                        break
 
-        # Also check for right cones that might not have been matched
-        for right_x, right_y in right_cones:
-            best_left = None
-            best_y_diff = float('inf')
+        # Validate we have both
+        if left_cone is None or right_cone is None:
+            # Try alternative: find the two closest cones that are on opposite sides
+            for i, cone1 in enumerate(sorted_cones):
+                for cone2 in sorted_cones[i+1:]:
+                    # Check they're on opposite sides
+                    if (cone1[0] < image_center_x) != (cone2[0] < image_center_x):
+                        separation = abs(cone1[0] - cone2[0])
+                        if min_sep <= separation <= max_sep:
+                            if cone1[0] < cone2[0]:
+                                return cone1, cone2
+                            else:
+                                return cone2, cone1
+            return None, None
 
-            for left_x, left_y in left_cones:
-                y_diff = abs(left_y - right_y)
-                lateral_dist = abs(right_x - left_x)
+        return left_cone, right_cone
 
-                if y_diff < max_y_diff and lateral_dist < max_pair_dist:
-                    if y_diff < best_y_diff:
-                        best_y_diff = y_diff
-                        best_left = (left_x, left_y)
-
-            if best_left is not None:
-                mid_x = (best_left[0] + right_x) / 2.0
-                mid_y = (best_left[1] + right_y) / 2.0
-                # Avoid duplicates
-                if not any(abs(p[0] - mid_x) < 1.0 and abs(p[1] - mid_y) < 1.0 for p in centerline):
-                    centerline.append((mid_x, mid_y))
-
-        # Sort centerline points by y-coordinate (bottom to top for consistency with lane detector)
-        centerline.sort(key=lambda p: -p[1])
-
-        return centerline
-
-    def compute_confidence(self, left_cones: List[Tuple[float, float]],
-                          right_cones: List[Tuple[float, float]]) -> float:
-        """Compute detection confidence based on number of cone pairs.
+    def compute_confidence(self, left_cone: Optional[Tuple[float, float]],
+                          right_cone: Optional[Tuple[float, float]]) -> float:
+        """Compute detection confidence based on whether we found a valid cone pair.
 
         Returns:
             Confidence value from 0.0 to 1.0
         """
-        min_cones = int(self.get_parameter('min_cones_per_side').value)
-
-        # Low confidence if not enough cones on each side
-        if len(left_cones) < min_cones or len(right_cones) < min_cones:
-            return 0.2
-
-        # Confidence based on number of cone pairs detected
-        num_pairs = min(len(left_cones), len(right_cones))
-
-        if num_pairs >= 3:
-            return 0.9  # High confidence
-        elif num_pairs >= 2:
-            return 0.7  # Medium-high confidence
-        elif num_pairs >= 1:
-            return 0.5  # Medium confidence
+        if left_cone is not None and right_cone is not None:
+            return 0.9  # High confidence - we have a valid pair
+        elif left_cone is not None or right_cone is not None:
+            return 0.3  # Low confidence - only one cone
         else:
-            return 0.3  # Low confidence
+            return 0.1  # Very low confidence - no cones
 
     def publish_confidence(self, confidence: float) -> None:
         msg = Float32()
@@ -353,21 +339,6 @@ class ConeDetectorNode(Node):
             self.get_logger().info(f"First corridor point: raw=({projected[0][0][0]:.2f}, {projected[0][0][1]:.2f}), final=({result[0][0]:.2f}, {result[0][1]:.2f})", throttle_duration_sec=2.0)
         return result
 
-    def smooth_path(self, points: Sequence[Tuple[float, float]]) -> List[Tuple[float, float]]:
-        """Smooth path using moving average window."""
-        window = max(1, int(self.get_parameter('smoothing_window').value))
-        if window <= 1 or len(points) < 3:
-            return list(points)
-
-        smoothed: List[Tuple[float, float]] = []
-        for idx in range(len(points)):
-            start = max(0, idx - window + 1)
-            chunk = points[start:idx + 1]
-            xs = [pt[0] for pt in chunk]
-            ys = [pt[1] for pt in chunk]
-            smoothed.append((float(np.mean(xs)), float(np.mean(ys))))
-        return smoothed
-
     def points_to_path(self, points: Sequence[Tuple[float, float]], image_msg: Image) -> Path:
         """Convert list of (x, y) points to nav_msgs/Path message."""
         path = Path()
@@ -405,61 +376,88 @@ class ConeDetectorNode(Node):
         return math.atan2(dy, dx)
 
     def create_debug_overlay(self, roi: np.ndarray, mask: np.ndarray,
-                            left_cones: List[Tuple[float, float]],
-                            right_cones: List[Tuple[float, float]],
-                            centerline: List[Tuple[float, float]],
+                            left_cone: Optional[Tuple[float, float]],
+                            right_cone: Optional[Tuple[float, float]],
+                            target_point: Optional[Tuple[float, float]],
                             offsets: Tuple[int, int]) -> np.ndarray:
-        """Create debug visualization with detected cones and centerline.
+        """Create debug visualization with detected cone pair and target.
 
-        - Left cones: blue circles
-        - Right cones: red circles
-        - Centerline: green circles
+        - Left cone: blue circle with label
+        - Right cone: red circle with label
+        - Target (midpoint): green circle
+        - Line connecting the cones through the target
+        - Min/max separation zone visualization
         - Orange mask overlay
         """
         # Create colored overlay of mask
         mask_color = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
-        # Make orange overlay
-        mask_color[:, :, 0] = 0  # Zero out blue channel
+        mask_color[:, :, 0] = 0  # Zero out blue channel for orange tint
         overlay = cv2.addWeighted(roi, 0.7, mask_color, 0.3, 0)
 
         col_offset, row_offset = offsets
+        img_height, img_width = roi.shape[:2]
+        img_center_x = img_width // 2
 
-        # Draw left cones (blue)
-        for x_pix, y_pix in left_cones:
-            cv2.circle(
-                overlay,
-                (int(x_pix - col_offset), int(y_pix - row_offset)),
-                6,
-                (255, 0, 0),  # Blue
-                -1,
-            )
+        # Get separation parameters
+        min_sep = int(self.get_parameter('min_cone_separation').value)
+        max_sep = int(self.get_parameter('max_cone_separation').value)
 
-        # Draw right cones (red)
-        for x_pix, y_pix in right_cones:
-            cv2.circle(
-                overlay,
-                (int(x_pix - col_offset), int(y_pix - row_offset)),
-                6,
-                (0, 0, 255),  # Red
-                -1,
-            )
+        # Draw min/max separation zone at bottom of image
+        # This shows the valid detection zone
+        zone_y = img_height - 30  # Near bottom of ROI
 
-        # Draw centerline (green)
-        for x_pix, y_pix in centerline:
-            cv2.circle(
-                overlay,
-                (int(x_pix - col_offset), int(y_pix - row_offset)),
-                4,
-                (0, 255, 0),  # Green
-                -1,
-            )
+        # Draw max separation (outer bounds) - yellow dashed
+        max_left = img_center_x - max_sep // 2
+        max_right = img_center_x + max_sep // 2
+        cv2.line(overlay, (max_left, zone_y - 10), (max_left, zone_y + 10), (0, 255, 255), 2)
+        cv2.line(overlay, (max_right, zone_y - 10), (max_right, zone_y + 10), (0, 255, 255), 2)
+        cv2.line(overlay, (max_left, zone_y), (max_right, zone_y), (0, 255, 255), 1)
 
-        # Draw lines connecting centerline points
-        if len(centerline) > 1:
-            for i in range(len(centerline) - 1):
-                pt1 = (int(centerline[i][0] - col_offset), int(centerline[i][1] - row_offset))
-                pt2 = (int(centerline[i+1][0] - col_offset), int(centerline[i+1][1] - row_offset))
-                cv2.line(overlay, pt1, pt2, (0, 255, 0), 2)
+        # Draw min separation (inner bounds) - cyan dashed
+        min_left = img_center_x - min_sep // 2
+        min_right = img_center_x + min_sep // 2
+        cv2.line(overlay, (min_left, zone_y - 10), (min_left, zone_y + 10), (255, 255, 0), 2)
+        cv2.line(overlay, (min_right, zone_y - 10), (min_right, zone_y + 10), (255, 255, 0), 2)
+
+        # Draw center line
+        cv2.line(overlay, (img_center_x, zone_y - 15), (img_center_x, zone_y + 15), (255, 255, 255), 1)
+
+        # Add labels
+        cv2.putText(overlay, f"min:{min_sep}", (min_left - 15, zone_y + 25),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.35, (255, 255, 0), 1)
+        cv2.putText(overlay, f"max:{max_sep}", (max_right - 20, zone_y + 25),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0, 255, 255), 1)
+
+        # Draw left cone (blue) with larger circle
+        if left_cone is not None:
+            pt = (int(left_cone[0] - col_offset), int(left_cone[1] - row_offset))
+            cv2.circle(overlay, pt, 12, (255, 0, 0), 3)  # Blue outline
+            cv2.putText(overlay, "L", (pt[0] - 5, pt[1] + 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
+
+        # Draw right cone (red) with larger circle
+        if right_cone is not None:
+            pt = (int(right_cone[0] - col_offset), int(right_cone[1] - row_offset))
+            cv2.circle(overlay, pt, 12, (0, 0, 255), 3)  # Red outline
+            cv2.putText(overlay, "R", (pt[0] - 5, pt[1] + 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
+
+        # Draw target point (green) and line connecting cones
+        if target_point is not None and left_cone is not None and right_cone is not None:
+            target_pt = (int(target_point[0] - col_offset), int(target_point[1] - row_offset))
+            left_pt = (int(left_cone[0] - col_offset), int(left_cone[1] - row_offset))
+            right_pt = (int(right_cone[0] - col_offset), int(right_cone[1] - row_offset))
+
+            # Draw line from left to right cone
+            cv2.line(overlay, left_pt, right_pt, (0, 255, 0), 2)
+
+            # Draw target point
+            cv2.circle(overlay, target_pt, 8, (0, 255, 0), -1)  # Filled green
+            cv2.putText(overlay, "TARGET", (target_pt[0] - 25, target_pt[1] - 15),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
+
+            # Show actual separation
+            actual_sep = int(abs(right_cone[0] - left_cone[0]))
+            cv2.putText(overlay, f"sep:{actual_sep}px", (target_pt[0] - 25, target_pt[1] + 20),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0, 255, 0), 1)
 
         return overlay
 

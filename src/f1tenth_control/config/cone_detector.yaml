@@ -15,22 +15,20 @@ cone_detector:
 
     # Orange cone HSV range (calibrated 2025-12-05)
     # Your cones are deep red (hue 0-2), high saturation
-    hsv_lower: [0, 212, 175]
-    hsv_upper: [179, 255, 243]
+    hsv_lower: [0, 177, 178]
+    hsv_upper: [12, 255, 255]
 
     # Contour filtering parameters
     min_contour_area: 100        # pixels, reject noise
-    max_contour_area: 10000      # pixels, reject large blobs
+    max_contour_area: 200000     # pixels, allow large close cones (400x400 = 160000)
     min_aspect_ratio: 0.3        # minimum width/height ratio
     max_aspect_ratio: 3.0        # maximum width/height ratio
     morph_kernel_size: 5         # kernel size for morphological operations
 
-    # Corridor computation parameters
-    min_cones_per_side: 1        # minimum cones needed on each side
-    max_cone_pair_distance: 200  # pixels, max lateral separation for pairing
-    max_y_diff_for_pairing: 50   # pixels, max vertical difference for pairing
-    smoothing_window: 3          # moving average window for path smoothing
-    min_corridor_points: 2       # minimum points needed to publish path
+    # Cone pair detection parameters
+    # Simple approach: find the closest left and right cones and navigate to their midpoint
+    min_cone_separation: 50      # pixels, minimum x-distance between left and right cone
+    max_cone_separation: 1200    # pixels, maximum x-distance between left and right cone
 
     # Homography parameters (same as lane detector)
     pixel_to_ground_homography: [
