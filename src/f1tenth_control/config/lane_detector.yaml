@@ -1,0 +1,36 @@
+lane_detector:
+  ros__parameters:
+    image_topic: "/car1/D435i/color/image_raw"
+    camera_info_topic: "/car1/D435i/color/camera_info"
+    odom_topic: "/car1/odom"
+    path_topic: "lane_center_path"
+    confidence_topic: "lane_confidence"
+    debug_image_topic: "lane_detector/debug_image"
+    publish_debug_image: true
+    roi_row_start: 220
+    roi_row_end: 719
+    roi_col_min: 0
+    roi_col_max: -1
+    hsv_lower: [15, 60, 70]
+    hsv_upper: [40, 255, 255]
+    lab_b_min: 150
+    min_row_pixels: 40
+    row_step: 15
+    max_rows: 12
+    morph_kernel_size: 5
+    smoothing_window: 5
+    min_points: 4
+    pixel_to_ground_homography: [
+      0.00003,  0.00175, -0.97424,
+      0.00060,  0.00020, -0.47260,
+     -0.00026, -0.00325,  1.00000
+    ]
+    ground_x_offset: 0.6  # Add 0.6m to X coordinates (adjust based on calibration)
+    # Axis conversion: convert homography output to robot frame (x=forward, y=left)
+    # After homography, apply: 1) swap if enabled, 2) negate x, 3) negate y
+    # Example: homography outputs (right, forward) -> set swap_xy=true, negate_y=true
+    homography_swap_xy: false
+    homography_negate_x: false
+    homography_negate_y: false
+    output_frame: "base_link"
+    use_odom: false  # Set to false for odom-free vision-only lane following

@@ -1,0 +1,48 @@
+cone_detector:
+  ros__parameters:
+    # Topics
+    image_topic: "/car1/D435i/color/image_raw"
+    path_topic: "cone_corridor_path"
+    confidence_topic: "cone_confidence"
+    debug_image_topic: "cone_detector/debug_image"
+    publish_debug_image: true
+
+    # ROI (Region of Interest) - same as lane detector
+    roi_row_start: 220
+    roi_row_end: 719
+    roi_col_min: 0
+    roi_col_max: -1
+
+    # Orange cone HSV range (calibrated 2025-12-05)
+    # Your cones are deep red (hue 0-2), high saturation
+    hsv_lower: [0, 177, 178]
+    hsv_upper: [12, 255, 255]
+
+    # Contour filtering parameters
+    min_contour_area: 100        # pixels, reject noise
+    max_contour_area: 200000     # pixels, allow large close cones (400x400 = 160000)
+    min_aspect_ratio: 0.3        # minimum width/height ratio
+    max_aspect_ratio: 3.0        # maximum width/height ratio
+    morph_kernel_size: 5         # kernel size for morphological operations
+
+    # Cone pair detection parameters
+    # Simple approach: find the closest left and right cones and navigate to their midpoint
+    min_cone_separation: 50      # pixels, minimum x-distance between left and right cone
+    max_cone_separation: 1200    # pixels, maximum x-distance between left and right cone
+
+    # Homography parameters (same as lane detector)
+    pixel_to_ground_homography: [
+      0.00003,  0.00175, -0.97424,
+      0.00060,  0.00020, -0.47260,
+     -0.00026, -0.00325,  1.00000
+    ]
+    ground_x_offset: 0.6  # Add 0.6m to X coordinates (adjust based on calibration)
+
+    # Axis conversion: convert homography output to robot frame (x=forward, y=left)
+    # After homography, apply: 1) swap if enabled, 2) negate x, 3) negate y
+    homography_swap_xy: false
+    homography_negate_x: false
+    homography_negate_y: false
+
+    # Output frame
+    output_frame: "base_link"

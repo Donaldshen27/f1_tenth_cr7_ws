@@ -1,0 +1,19 @@
+construction_zone_mux:
+  ros__parameters:
+    # Topic names
+    lane_path_topic: "lane_center_path"
+    lane_confidence_topic: "lane_confidence"
+    cone_path_topic: "cone_corridor_path"
+    cone_confidence_topic: "cone_confidence"
+    selected_path_topic: "selected_path"
+    zone_mode_topic: "zone_mode"
+
+    # Transition thresholds
+    entry_threshold: 0.4      # Cone confidence to enter CONE mode
+    exit_threshold: 0.2       # Cone confidence threshold for exiting CONE mode
+    lane_exit_threshold: 0.04 # Lane confidence required to exit CONE mode
+    hysteresis_frames: 5      # Consecutive frames needed to trigger transition
+    require_lane_on_exit: true  # Must see lane before exiting cone mode
+
+    # Publishing rate
+    publish_rate_hz: 50.0     # 50 Hz for smooth control

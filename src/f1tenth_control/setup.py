@@ -16,7 +16,7 @@ setup(
         ('share/' + package_name + '/rviz', glob('rviz/*.rviz')),
         ('share/' + package_name + '/waypoints', glob('waypoints/*.csv')),
     ],
-    install_requires=['setuptools'],
+    install_requires=['setuptools', 'ament_index_python'],
     zip_safe=True,
     maintainer='skn',
     maintainer_email='skn@todo.todo',
@@ -26,6 +26,10 @@ setup(
         'console_scripts': [
             'pure_pursuit_control = f1tenth_control.pure_pursuit_control:main',
             'waypoint_recorder = f1tenth_control.waypoint_recorder:main',
+            'lane_detector_node = f1tenth_control.lane_detector_node:main',
+            'lane_path_mux = f1tenth_control.lane_path_mux:main',
+            'cone_detector_node = f1tenth_control.cone_detector_node:main',
+            'construction_zone_mux = f1tenth_control.construction_zone_mux:main',
         ],
     },
 )

@@ -2,3 +2,12 @@ build/
 install/
 log/
 __pycache__/
+
+# Temporary files
+*.swp
+*.swo
+*.backup
+*~
+
+# Claude Code configuration (user-specific)
+.claude/

@@ -16,6 +16,7 @@
   <depend>cv_bridge</depend>
   <depend>tf_transformations</depend>
   <depend>ackermann_msgs</depend>
+  <exec_depend>ament_index_python</exec_depend>
 
   <exec_depend>teleop_twist_keyboard</exec_depend>
   
