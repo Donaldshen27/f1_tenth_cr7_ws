@@ -1,1 +1,0 @@
-- Before running ros2 commands, kill existing processes properly.
